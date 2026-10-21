@@ -266,7 +266,8 @@ impl From<SourceRange> for pb::SourceRange {
 }
 
 /// Total: nothing renders carets from a suspension's range, so no bounds check
-/// is needed (cf. `StackFrame`).
+/// is needed (cf. `StackFrame`). Copies the filename even though it owns the
+/// message, so a budgeted decoder must charge the copy.
 impl From<pb::SourceRange> for SourceRange {
     fn from(range: pb::SourceRange) -> Self {
         Self::from(&range)

@@ -14,7 +14,7 @@ use monty_proto::{
     with_decode_budget,
 };
 use monty_types::{
-    MontyUuid,
+    MontyUuid, SourceRange,
     unstable::{ClassTypeNode, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
@@ -879,4 +879,23 @@ fn container_ids_are_charged() {
 #[test]
 fn named_tuple_field_names_are_charged() {
     assert_snapshot!(decode(&nearly_full_arena(Some(named_tuple_node(8)))).unwrap_err(), @"failed to decode Protobuf message: MontyNode.kind: frame exceeds decode memory budget");
+}
+
+/// A call position's filename is copied into the domain range, cut to
+/// `MAX_FILENAME_LEN`. Every copy is charged, including each repeated position
+/// field, which merges into the held range and copies its filename again.
+#[test]
+fn call_position_filename_copies_are_charged() {
+    let max = SourceRange::MAX_FILENAME_LEN;
+    for (len, kept) in [(2, 2), (max + 10, max)] {
+        let position = repeated_field(1, WireType::LengthDelimited, "a".repeat(len).as_bytes(), 1);
+        let mut wire = repeated_field(8, WireType::LengthDelimited, &position, 1);
+        wire.extend(repeated_field(8, WireType::LengthDelimited, &[], 3));
+        let (call, charged) = measured_decode::<WireFunctionCall>(&wire);
+        assert_eq!(call.position.map(|position| position.filename.len()), Some(kept));
+        assert_eq!(charged, len + 4 * kept);
+        with_decode_budget(charged - 1, || {
+            assert!(WireFunctionCall::decode(wire.as_slice()).is_err());
+        });
+    }
 }
