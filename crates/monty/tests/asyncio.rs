@@ -9,6 +9,7 @@ use monty::{Dump, MontyRun, ResolveFutures, RunProgress, Session, SessionRef, du
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintWriter,
     ResourceTracker,
+    unstable::{self, FutureOutcome},
 };
 
 /// Starts a snippet and resolves external names without answering its first call.
@@ -440,6 +441,96 @@ fn resume_with_duplicate_call_id() {
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
     let result = progress.into_complete().expect("should complete");
     assert_eq!(result, MontyObject::int(42));
+}
+
+// === Test: identity of values settled in one batch ===
+
+/// Gathers `foo()` and `bar()`, mutates the first result and reports whether
+/// the two results are one object.
+fn create_gather_identity_runner() -> MontyRun {
+    let code = r"
+import asyncio
+
+async def main():
+    a, b = await asyncio.gather(foo(), bar())
+    a.append(3)
+    return [a is b, b]
+
+await main()
+";
+    MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap()
+}
+
+/// A node two results share in a batch's arena is imported once: one object.
+#[test]
+fn resume_with_a_shared_arena_value_shares_one_object() {
+    let runner = create_gather_identity_runner();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+
+    let (graph, root) = unstable::into_graph_parts(MontyObject::list([MontyObject::int(1), MontyObject::int(2)]));
+    let results = unstable::future_results_from_parts(
+        graph,
+        vec![
+            (call_ids[0], FutureOutcome::Return(root)),
+            (call_ids[1], FutureOutcome::Return(root)),
+        ],
+    )
+    .unwrap();
+
+    let progress = state.resume_batch(results, PrintWriter::Stdout).unwrap();
+    let shared = MontyObject::list([MontyObject::int(1), MontyObject::int(2), MontyObject::int(3)]);
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::list([MontyObject::bool(true), shared])
+    );
+}
+
+/// Values pushed one call at a time keep their own nodes: separate calls get
+/// separate copies, even of equal values.
+#[test]
+fn resume_with_separate_values_copies_each() {
+    let runner = create_gather_identity_runner();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+
+    let value = MontyObject::list([MontyObject::int(1), MontyObject::int(2)]);
+    let results = vec![
+        (call_ids[0], ExtFunctionResult::Return(value.clone())),
+        (call_ids[1], ExtFunctionResult::Return(value.clone())),
+    ];
+
+    let progress = state.resume(results, PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::list([MontyObject::bool(false), value])
+    );
+}
+
+/// An output-only value cannot enter the sandbox; the batch fails as a whole.
+#[test]
+fn resume_with_an_output_only_value_fails() {
+    let runner = create_gather_two_runner();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+
+    let results = vec![
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::int(10))),
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::repr("<object>"))),
+    ];
+
+    let exc = state.resume(results, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::RuntimeError);
+    assert_eq!(
+        exc.message(),
+        Some("Invalid return value for an awaited call: 'Repr' is not a valid input value")
+    );
 }
 
 // === Test: gather_error_propagated_as_exception ===

@@ -9,8 +9,8 @@
 use std::mem;
 
 use monty_types::{
-    CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter,
-    ResourceTracker, SourceRange,
+    CallArgs, ExcType, FutureResults, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall,
+    PrintWriter, ResourceTracker, SourceRange,
 };
 
 use crate::{
@@ -776,6 +776,15 @@ impl ResolveFutures {
         results: Vec<(u32, ExtFunctionResult)>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
+        self.resume_batch(results.into(), print)
+    }
+
+    /// [`resume`](Self::resume) with results whose values share one arena, as a
+    /// transport decodes them: a value several results reach is imported once.
+    ///
+    /// # Errors
+    /// Returns [`MontyException`] if any `call_id` in `results` is not in the pending set.
+    pub fn resume_batch(self, results: FutureResults, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         let Self {
             mut executor,
             vm_state,
@@ -785,10 +794,7 @@ impl ResolveFutures {
         } = self;
 
         // Validate that all provided call_ids are in the pending set before restoring VM.
-        let invalid_call_id = results
-            .iter()
-            .find(|(call_id, _)| !pending_call_ids.contains(call_id))
-            .map(|(call_id, _)| *call_id);
+        let invalid_call_id = results.call_ids().find(|call_id| !pending_call_ids.contains(call_id));
 
         heap.tracker.on_turn_start();
         let (converted, vm_state) =
@@ -950,7 +956,7 @@ pub(crate) fn resume_with_result(
                 }
             }
             if eager_call_id.is_some() {
-                vm.apply_future_results(vec![(call_id, result)])?;
+                vm.apply_future_results(FutureResults::from(vec![(call_id, result)]))?;
             }
             vm.run_external()
         }

@@ -7,8 +7,11 @@
 use num_bigint::BigInt;
 
 use super::{CallArgs, MontyObject, NamedValues, ObjectRef};
-pub use crate::graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId};
 use crate::{file_mode::FileMode, os::TimeCaller};
+pub use crate::{
+    graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
+    results::{FutureOutcome, future_results_from_parts, into_future_results_parts},
+};
 
 /// The owned arena, positional roots and keyword roots of a call.
 pub type CallArgsParts = (MontyGraph, Vec<NodeId>, Vec<(NodeId, NodeId)>);

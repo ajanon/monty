@@ -8,7 +8,10 @@
 
 use std::{mem, task::Poll};
 
-use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
+use monty_types::{
+    FutureResults, InvalidInputError, MontyException, ResourceError, ResourceTracker,
+    unstable::{self, FutureOutcome},
+};
 use smallvec::{SmallVec, smallvec};
 
 use super::{
@@ -28,7 +31,7 @@ use crate::{
         HeapReadOutput, HeapReader,
     },
     intern::FunctionId,
-    object_bridge::MontyObjectExt,
+    object_bridge::MontyGraphExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
     types::List,
     value::Value,
@@ -897,24 +900,32 @@ impl<'h> VM<'h> {
 
     /// Caches host results and wakes their awaiters without executing bytecode.
     /// Eager results have no awaiter yet; their following `await` reads the cached result.
-    pub fn apply_future_results(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<()> {
-        for (call_id, ext_result) in results {
-            match ext_result {
-                ExtFunctionResult::Return(obj) => {
-                    // A resource error is a `MemoryError` here as in `resume`,
-                    // so a large host value is not misreported as a bad type.
-                    let value = obj.to_value(self).map_err(|e| match e {
-                        InvalidInputError::Resource(err) => RunError::from(err),
-                        other @ InvalidInputError::InvalidType(_) => RunError::from(MontyException::runtime_error(
-                            format!("Invalid return value for call {call_id}: {other}"),
-                        )),
-                    })?;
-                    self.resolve_future(call_id, value);
+    ///
+    /// The batch's arena is imported once, like feed inputs and call arguments: a value
+    /// several results share is one sandbox object, and the import costs the arena rather
+    /// than the result count times the value. A bad value fails the whole batch.
+    pub fn apply_future_results(&mut self, results: FutureResults) -> RunResult<()> {
+        let (graph, results) = unstable::into_future_results_parts(results);
+        // A resource error is a `MemoryError` here as in `resume`,
+        // so a large host value is not misreported as a bad type.
+        let values = graph.to_values(self).map_err(|e| match e {
+            InvalidInputError::Resource(err) => RunError::from(err),
+            other @ InvalidInputError::InvalidType(_) => RunError::from(MontyException::runtime_error(format!(
+                "Invalid return value for an awaited call: {other}"
+            ))),
+        })?;
+        let this = self;
+        defer_drop!(values, this);
+        for (call_id, outcome) in results {
+            match outcome {
+                FutureOutcome::Return(root) => {
+                    let value = values[root.index()].clone_with_heap(this.heap);
+                    this.resolve_future(call_id, value);
                 }
-                ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc)),
-                ExtFunctionResult::Future(_) => {}
-                ExtFunctionResult::NotFound(function_name) => {
-                    self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+                FutureOutcome::Error(exc) => this.fail_future(call_id, RunError::from(exc)),
+                FutureOutcome::Future(_) => {}
+                FutureOutcome::NotFound(function_name) => {
+                    this.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
                 }
             }
         }
@@ -924,7 +935,7 @@ impl<'h> VM<'h> {
     /// Ingests a host batch, then resumes tasks in resolution order for both values and errors.
     /// With no runnable task, yields the remaining pending call IDs to the host.
     /// Returns an internal error if neither runnable tasks nor pending calls remain.
-    pub fn resume_with_resolved_futures(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<FrameExit> {
+    pub fn resume_with_resolved_futures(&mut self, results: FutureResults) -> RunResult<FrameExit> {
         self.apply_future_results(results)?;
         if let Some(next_task_id) = self.scheduler.next_ready_task() {
             if let Err(error) = self.activate_task(next_task_id) {

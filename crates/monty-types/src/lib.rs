@@ -52,7 +52,7 @@ pub use crate::{
         LARGE_RESULT_THRESHOLD, LIVE_MEMORY, OOM_EXIT_CODE, ResourceError, ResourceLimits, ResourceTracker,
         TimeLimitScope, allocate_into_baseline, memory_limit_with_headroom,
     },
-    results::{ExtFunctionResult, NameLookupResult},
+    results::{ExtFunctionResult, FutureResults, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions, SOURCE_SCAN_THRESHOLD},
     scan::ScanArgs,
     type_checking::{

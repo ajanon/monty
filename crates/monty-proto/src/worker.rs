@@ -28,10 +28,11 @@ use monty::{
 };
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
-    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
-    ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream, PrintWriter,
-    PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD, SourceRange,
-    TypeCheckState, TypeCheckingConfig, allocate_into_baseline,
+    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExtFunctionResult, FutureResults,
+    IMPORT_STUBS_CALL_ID, ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
+    PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD,
+    SourceRange, TypeCheckState, TypeCheckingConfig, allocate_into_baseline,
+    unstable::{self, FutureOutcome},
 };
 
 use super::{
@@ -887,7 +888,7 @@ impl Child {
                 call.resume_eager(result, PrintWriter::Callback(&mut print))
             }
             (ReplProgress::ResolveFutures(state), FuturesReply::Batch(results)) => {
-                state.resume(results, PrintWriter::Callback(&mut print))
+                state.resume_batch(results, PrintWriter::Callback(&mut print))
             }
             _ => unreachable!("reply shaped by the suspension above"),
         };
@@ -1294,18 +1295,19 @@ enum FuturesReply {
     /// One settled coroutine for a call with `allow_eager_await`.
     Eager(Result<MontyObject, MontyException>),
     /// Results for a `ResolveFutures` suspension.
-    Batch(Vec<(u32, ExtFunctionResult)>),
+    Batch(FutureResults),
 }
 
 /// Checks an eager reply is exactly one settled result for `call_id`; the
-/// error is the protocol-violation message.
-fn eager_result(
-    results: Vec<(u32, ExtFunctionResult)>,
-    call_id: u32,
-) -> Result<Result<MontyObject, MontyException>, &'static str> {
+/// error is the protocol-violation message. The value keeps the whole arena:
+/// one root needs no copy of the nodes it reaches.
+fn eager_result(results: FutureResults, call_id: u32) -> Result<Result<MontyObject, MontyException>, &'static str> {
+    let (graph, results) = unstable::into_future_results_parts(results);
     match <[_; 1]>::try_from(results) {
-        Ok([(id, ExtFunctionResult::Return(value))]) if id == call_id => Ok(Ok(value)),
-        Ok([(id, ExtFunctionResult::Error(exc))]) if id == call_id => Ok(Err(exc)),
+        Ok([(id, FutureOutcome::Return(root))]) if id == call_id => unstable::object_from_graph(graph, root)
+            .map(Ok)
+            .map_err(|_| "eager ResumeFutures value root is out of range"),
+        Ok([(id, FutureOutcome::Error(exc))]) if id == call_id => Ok(Err(exc)),
         Ok([(id, _)]) if id == call_id => Err("eager coroutine must resolve to a value or exception"),
         _ => Err("eager ResumeFutures must contain exactly the suspended call id"),
     }

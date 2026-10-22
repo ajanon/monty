@@ -13,8 +13,8 @@ use std::{mem, sync::Arc};
 
 use ahash::AHashMap;
 use monty_types::{
-    CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, OsPolicy, PrintWriter,
-    ResourceTracker, SOURCE_SCAN_THRESHOLD, SourceRange,
+    CallArgs, ExcType, FutureResults, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, OsPolicy,
+    PrintWriter, ResourceTracker, SOURCE_SCAN_THRESHOLD, SourceRange,
     unstable::{self, MontyGraph, NodeId},
 };
 use ruff_python_ast::token::TokenKind;
@@ -1077,6 +1077,16 @@ impl ReplResolveFutures {
         results: Vec<(u32, ExtFunctionResult)>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.resume_batch(results.into(), print)
+    }
+
+    /// [`resume`](Self::resume) with results whose values share one arena, as a
+    /// transport decodes them: a value several results reach is imported once.
+    pub fn resume_batch(
+        self,
+        results: FutureResults,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
             mut repl,
             mut executor,
@@ -1085,10 +1095,7 @@ impl ReplResolveFutures {
             ..
         } = self;
 
-        let invalid_call_id = results
-            .iter()
-            .find(|(call_id, _)| !pending_call_ids.contains(call_id))
-            .map(|(call_id, _)| *call_id);
+        let invalid_call_id = results.call_ids().find(|call_id| !pending_call_ids.contains(call_id));
 
         repl.heap.tracker.on_turn_start();
         match HeapReader::with(

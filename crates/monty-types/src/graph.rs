@@ -459,13 +459,19 @@ impl MontyGraph {
     /// Appends every node of `other`, rebasing its ids, and returns the
     /// offset added to them so the caller can rebase its own roots.
     pub fn merge(&mut self, other: Self) -> u32 {
-        let offset = Self::id_at(self.nodes.len()).0;
-        self.nodes.reserve(other.nodes.len());
-        for mut node in other.nodes {
-            node.for_each_child_mut(|id| id.0 += offset);
-            self.nodes.push(node);
+        if self.nodes.is_empty() {
+            // the first value merged into an empty arena keeps its ids: adopt it whole
+            self.nodes = other.nodes;
+            0
+        } else {
+            let offset = Self::id_at(self.nodes.len()).0;
+            self.nodes.reserve(other.nodes.len());
+            for mut node in other.nodes {
+                node.for_each_child_mut(|id| id.0 += offset);
+                self.nodes.push(node);
+            }
+            offset
         }
-        offset
     }
 
     /// Number of nodes.

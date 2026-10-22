@@ -121,6 +121,7 @@ Invalid snapshots have no correctness or availability guarantees: loading or usi
 Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip. `OsCall::allow_eager_await` says the same of an `asyncio.sleep` the host has already waited out.
+`ResolveFutures::resume` takes `(call_id, result)` pairs, each value its own copy; `resume_batch` takes a `FutureResults` whose values share one arena, imported once, as a transport decodes them.
 
 Imports of unknown modules suspend with `OsFunctionCall::Import` and the top-level module name.
 The host's answer becomes the module; dotted imports read subsequent components as attributes of that value.

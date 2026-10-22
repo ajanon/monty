@@ -61,6 +61,8 @@ Host construction and cloning are unbudgeted; fallible `try_push` charges any gr
 Values cross as one flat `monty.v1.Arena` per message: a post-order node arena in which containers hold child indexes.
 A sub-object shared inside the sandbox, or between two arguments of one call, is sent once, and the carrying message
 names its roots by index.
+The worker imports a `ResumeFutures` arena once as well, so a node two results reach is one sandbox object.
+The bundled hosts send each result's own nodes, so separate calls still get separate copies.
 prost `extern_path` maps the message onto `WireArena`, a hand-written `prost::Message` implementation that encodes
 borrowed `monty_types::unstable::MontyNode`s without cloning and decodes one generated protobuf node at a time.
 Each node is validated and converted before being retained in the domain arena; temporary payloads and conversion allocations share the frame budget.

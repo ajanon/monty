@@ -4,9 +4,10 @@
 use std::mem::size_of;
 
 use monty_types::{
-    BuiltinsFunctions, CallArgs, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NamedValues,
-    unstable::{self, GraphError, MontyGraph, MontyNode, NodeId},
+    BuiltinsFunctions, CallArgs, ExcType, ExtFunctionResult, FileMode, FutureResults, MontyDate, MontyDateTime,
+    MontyException, MontyFileHandle, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    NamedValues,
+    unstable::{self, FutureOutcome, GraphError, MontyGraph, MontyNode, NodeId},
 };
 
 fn class_type(attrs: impl IntoIterator<Item = (MontyObject, MontyObject)>) -> MontyObject {
@@ -331,6 +332,55 @@ fn named_values_convert_from_pairs() {
             root: NodeId(9),
             len: 2
         })
+    );
+}
+
+/// Results pushed one call at a time keep their order and their own nodes, so
+/// equal values from separate calls stay separate copies.
+#[test]
+fn future_results_push_each_value_separately() {
+    let value = MontyObject::list([MontyObject::int(1)]);
+    let results = FutureResults::from(vec![
+        (3, ExtFunctionResult::Return(value.clone())),
+        (
+            1,
+            ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, None)),
+        ),
+        (2, ExtFunctionResult::Return(value.clone())),
+    ]);
+    assert_eq!(results.len(), 3);
+    assert_eq!(results.call_ids().collect::<Vec<_>>(), vec![3, 1, 2]);
+    let (graph, outcomes) = unstable::into_future_results_parts(results);
+    assert_eq!(graph.len(), 4);
+    let roots: Vec<NodeId> = outcomes
+        .iter()
+        .filter_map(|(_, outcome)| match outcome {
+            FutureOutcome::Return(root) => Some(*root),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(roots, vec![NodeId(1), NodeId(3)]);
+    assert!(roots.iter().all(|root| graph.value(*root) == value.as_ref()));
+    assert!(matches!(outcomes[1].1, FutureOutcome::Error(_)));
+}
+
+/// A decoded batch may share nodes between results; only its roots are checked.
+#[test]
+fn future_results_from_parts_checks_roots() {
+    let (graph, root) = unstable::into_graph_parts(MontyObject::int(1));
+    let shared = vec![(0, FutureOutcome::Return(root)), (1, FutureOutcome::Return(root))];
+    assert_eq!(
+        unstable::future_results_from_parts(graph.clone(), shared)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        unstable::future_results_from_parts(graph, vec![(0, FutureOutcome::Return(NodeId(1)))]).unwrap_err(),
+        GraphError::RootOutOfRange {
+            root: NodeId(1),
+            len: 1
+        }
     );
 }
 

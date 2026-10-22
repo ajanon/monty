@@ -45,8 +45,10 @@ extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyGraphExt`, `CallArgsExt`
 `object_bridge::GraphExporter` builds one `MontyGraph` per outgoing message, so a sub-object shared in the sandbox
 crosses once; `MontyGraphExt::to_values` converts an incoming graph back into interpreter values.
 `MontyObject` is one owned value, a graph plus its root node: hosts build inputs with it and read results through its
-`ObjectRef` accessors. These types, along with `CallArgs` and `NamedValues`, have private fields; carrier builders accept
-`MontyObject` values rather than exposing node IDs.
+`ObjectRef` accessors. These types, along with `CallArgs`, `NamedValues` and `FutureResults`, have private fields;
+carrier builders accept `MontyObject` values rather than exposing node IDs.
+Every multi-root incoming message (feed inputs, call arguments, a `ResumeFutures` batch) is imported once with
+`to_values`, never copied out per root: a per-root copy costs the number of roots times the size of what they share.
 Graph types (`MontyGraph`, `MontyNode`, `NodeId`, `ClassTypeNode`, `GraphError`), `PushValue`, raw node inspection and
 borrowed/owned storage access are exported only through `monty_types::unstable`.
 These representation APIs carry no API compatibility guarantee; prefer value constructors and accessors elsewhere.

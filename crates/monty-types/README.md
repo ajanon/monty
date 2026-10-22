@@ -14,7 +14,8 @@ implementation**.
   `MontyObject::as_ref()` borrows a value for inspection.
 - `CallArgs` / `NamedValues` — the arguments or inputs of one message.
   Their builders accept `MontyObject` values; their iterators return borrowed values.
-  Both carriers and the `MontyObject` / `ObjectRef` types keep their fields private.
+  `FutureResults` carries the settled calls of one `ResolveFutures` resume the same way.
+  The carriers and the `MontyObject` / `ObjectRef` types keep their fields private.
 - `unstable` — graph representation APIs for bindings and transport adapters, with no API compatibility guarantee.
   They may change or disappear in any release; prefer value constructors and typed accessors when possible.
 - `MontyException` / `ExcType` — exceptions with tracebacks (`StackFrame`,

@@ -3,8 +3,8 @@
 //! value is an index into the arena the same message carries.
 
 use monty_types::{
-    ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
-    unstable::{self, MontyGraph, NodeId},
+    ExtFunctionResult, FutureResults, MontyException, MontyObject, NameLookupResult,
+    unstable::{self, FutureOutcome, MontyGraph, NodeId},
 };
 
 use crate::{
@@ -47,14 +47,17 @@ pub fn ext_result_from_proto(
         pb::ext_function_result::Kind::Error(err) => Ok(ExtFunctionResult::Error(MontyException::try_from(err)?)),
         pb::ext_function_result::Kind::Future(call_id) => Ok(ExtFunctionResult::Future(call_id)),
         pb::ext_function_result::Kind::NotFound(name) => Ok(ExtFunctionResult::NotFound(name)),
-        // NotHandled has no monty equivalent: it resolves against the
-        // suspended OS call, so the child intercepts it before this
-        // conversion (see `Child::handle_resume_call`); anywhere else it
-        // is out of context
-        pb::ext_function_result::Kind::NotHandled(_) => Err(ProtoConvertError::InvalidValue {
-            field: "ExtFunctionResult.kind",
-            reason: "NotHandled is only valid answering a suspended OS call".to_owned(),
-        }),
+        pb::ext_function_result::Kind::NotHandled(_) => Err(not_handled_out_of_context()),
+    }
+}
+
+/// NotHandled has no monty equivalent: it resolves against the suspended OS
+/// call, so the child intercepts it before conversion (see
+/// `Child::handle_resume_call`); anywhere else it is out of context.
+fn not_handled_out_of_context() -> ProtoConvertError {
+    ProtoConvertError::InvalidValue {
+        field: "ExtFunctionResult.kind",
+        reason: "NotHandled is only valid answering a suspended OS call".to_owned(),
     }
 }
 
@@ -124,15 +127,17 @@ pub fn future_results_to_proto(results: Vec<(u32, ExtFunctionResult)>) -> pb::Re
     }
 }
 
-/// Converts wire future results into `(call_id, result)` pairs for
-/// `ResolveFutures::resume`; each returned value gets its own copy of the
-/// nodes it reaches.
+/// Converts wire future results into a batch for `ResolveFutures::resume_batch`.
+///
+/// The arena stays whole and is imported once on resume, so a value several
+/// results reach costs the message rather than the result count times the
+/// value. Bundled hosts send each result's own nodes, keeping copies per call.
 pub fn future_results_from_proto(
     results: impl IntoIterator<Item = pb::FutureResult>,
     values: Option<WireArena>,
-) -> Result<Vec<(u32, ExtFunctionResult)>, ProtoConvertError> {
+) -> Result<FutureResults, ProtoConvertError> {
     let graph = graph_or_empty(values)?;
-    results
+    let results = results
         .into_iter()
         .map(|fr| {
             let result = fr
@@ -141,17 +146,22 @@ pub fn future_results_from_proto(
             let kind = result
                 .kind
                 .ok_or(ProtoConvertError::MissingField("ExtFunctionResult.kind"))?;
-            let result = match kind {
-                pb::ext_function_result::Kind::ReturnValue(root) => {
-                    let root = NodeId(root);
-                    graph.check_root(root).map_err(|err| graph_error(&err))?;
-                    ExtFunctionResult::Return(graph.value(root).to_owned())
-                }
-                other => ext_result_from_proto(pb::ExtFunctionResult { kind: Some(other) }, None)?,
-            };
-            Ok((fr.call_id, result))
+            Ok((fr.call_id, future_outcome_from_proto(kind)?))
         })
-        .collect()
+        .collect::<Result<Vec<_>, ProtoConvertError>>()?;
+    unstable::future_results_from_parts(graph, results).map_err(|err| graph_error(&err))
+}
+
+/// One wire result as a batch outcome; a returned value stays an index into
+/// the batch's arena.
+fn future_outcome_from_proto(kind: pb::ext_function_result::Kind) -> Result<FutureOutcome, ProtoConvertError> {
+    match kind {
+        pb::ext_function_result::Kind::ReturnValue(root) => Ok(FutureOutcome::Return(NodeId(root))),
+        pb::ext_function_result::Kind::Error(err) => Ok(FutureOutcome::Error(MontyException::try_from(err)?)),
+        pb::ext_function_result::Kind::Future(call_id) => Ok(FutureOutcome::Future(call_id)),
+        pb::ext_function_result::Kind::NotFound(name) => Ok(FutureOutcome::NotFound(name)),
+        pb::ext_function_result::Kind::NotHandled(_) => Err(not_handled_out_of_context()),
+    }
 }
 
 /// The result of a `ResumeCall` reply, read with its arena by

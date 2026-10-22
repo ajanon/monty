@@ -5,6 +5,7 @@
 //! `Child` state machine over the message-based transport without any wasm
 //! toolchain.
 
+use allocation_counter::measure;
 use monty::{Dump, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
     FrameReader, PROTOCOL_VERSION, WireArena, WireFunctionCall, named_values_to_proto, pb,
@@ -167,6 +168,67 @@ fn allow_eager_await_preserves_legacy_replies() {
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(42));
+}
+
+/// A value every result of one `ResumeFutures` shares is imported once: the
+/// turn costs the message, not the result count times the value.
+#[test]
+fn resume_futures_imports_a_shared_value_once() {
+    let one = settle_with_shared_list(1);
+    let many = settle_with_shared_list(200);
+    assert!(many < 2 * one, "200 results allocated {many} bytes, 1 result {one}");
+}
+
+/// Gathers `n` external futures and settles them all with one shared
+/// 50,000-item list, returning the bytes the settling turn allocated.
+fn settle_with_shared_list(n: usize) -> u64 {
+    let mut child = Child::default();
+    let code = format!(
+        "import asyncio\nxs = await asyncio.gather(*[f() for _ in range({n})])\n[len(xs), len(xs[0]), xs[0] is xs[-1]]"
+    );
+    let call = start_external_call(&mut child, &code);
+    let pending = defer_external_calls(&mut child, call);
+    assert_eq!(pending.len(), n);
+
+    let (graph, root) = unstable::into_graph_parts(MontyObject::list((0..50_000).map(MontyObject::int)));
+    let results = pending
+        .iter()
+        .map(|&id| future_reply(id, pb::ext_function_result::Kind::ReturnValue(root.0)))
+        .collect::<Vec<_>>();
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+        results: results.into(),
+        values: Some(WireArena::new(graph)),
+    }));
+    let mut bytes = Vec::new();
+    let allocated = measure(|| bytes = dispatch_frame(&mut child, &request).0).bytes_total;
+    // the arena shares one node, so every result is the same sandbox list
+    let expected = MontyObject::list([
+        MontyObject::int(i64::try_from(n).unwrap()),
+        MontyObject::int(50_000),
+        MontyObject::bool(true),
+    ]);
+    assert_eq!(expect_complete(split_turn(&bytes).1), expected);
+    allocated
+}
+
+/// Answers each external call with a pending future until the run blocks,
+/// returning the call ids it then waits on.
+fn defer_external_calls(child: &mut Child, mut call: WireFunctionCall) -> Vec<u32> {
+    loop {
+        let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id: call.call_id,
+            result: Some(pb::ExtFunctionResult {
+                kind: Some(pb::ext_function_result::Kind::Future(call.call_id)),
+            }),
+            values: None,
+        }));
+        let (bytes, _) = dispatch_frame(child, &request);
+        match split_turn(&bytes).1 {
+            pb::child_event::Kind::FunctionCall(next) => call = next,
+            pb::child_event::Kind::ResolveFutures(wait) => return wait.pending_call_ids.into_inner(),
+            other => panic!("expected a call or a wait, got {other:?}"),
+        }
+    }
 }
 
 /// Frames one request the way a host transport would before posting it.

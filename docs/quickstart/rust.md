@@ -304,6 +304,8 @@ Async host functions work the same way: [`FunctionCall::resume_pending`](../api/
 code can `await`, and when every task is blocked the run yields [`RunProgress::ResolveFutures`](../api/rust/monty.md#runprogress) for the host to settle.
 When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the
 result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functioncall) and skip the `ResolveFutures` round trip.
+[`ResolveFutures::resume`](../api/rust/monty.md#resolvefutures) takes `(call_id, result)` pairs, each value its own copy;
+`resume_batch` takes a [`FutureResults`](../api/rust/monty-types.md#futureresults) whose values share one arena, imported once.
 
 Unknown imports suspend with [`OsFunctionCall::Import`](../api/rust/monty-types.md#osfunctioncall) and the top-level
 name.

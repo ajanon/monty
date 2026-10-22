@@ -910,7 +910,9 @@ pub struct ResumeFutures {
     /// call_id. The worker creates a settled awaitable before continuing.
     #[prost(message, repeated, tag = "1")]
     pub results: crate::budgeted_prost::alloc::vec::Vec<FutureResult>,
-    /// The arena every `return_value` indexes.
+    /// The arena every `return_value` indexes, imported once: a node two
+    /// results reach is one sandbox object. Separate calls get separate copies
+    /// when each result's nodes are its own, as every bundled host sends them.
     #[prost(message, optional, tag = "2")]
     pub values: ::core::option::Option<crate::WireArena>,
 }
