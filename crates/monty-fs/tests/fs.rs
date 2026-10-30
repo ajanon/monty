@@ -1410,12 +1410,23 @@ fn ovl_mem_rename_overlay_directory_to_same_path() {
 }
 
 #[test]
-fn ovl_mem_rename_missing_path_to_same_path_fails() {
+fn ovl_mem_rename_missing_path_fails() {
     // A self-rename still requires the entry to exist: POSIX raises ENOENT.
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
 
     let err = call(&mut mt, &rename("/mnt/no_such_file.txt", "/mnt/no_such_file.txt"))
+        .unwrap()
+        .unwrap_err()
+        .into_exception();
+    assert_exc(
+        &err,
+        ExcType::FileNotFoundError,
+        "[Errno 2] No such file or directory: '/mnt/no_such_file.txt'",
+    );
+
+    // Source existence is checked before destination type compatibility.
+    let err = call(&mut mt, &rename("/mnt/no_such_file.txt", "/mnt/subdir"))
         .unwrap()
         .unwrap_err()
         .into_exception();
